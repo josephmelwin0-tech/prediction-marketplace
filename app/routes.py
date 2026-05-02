@@ -6,6 +6,9 @@ from .database import get_db
 from .models import Agent, Market, Bet
 from .polymarket import fetch_polymarket_markets
 import uuid
+from .resolution import search_resolution_evidence, determine_resolution, redistribute_credits
+from datetime import datetime
+
 
 router = APIRouter()
 
@@ -254,6 +257,7 @@ def seed_markets(db: Session = Depends(get_db)):
         "message": f"Seeded {len(created)} markets from Polymarket",
         "markets": created
     }
+
 @router.delete("/markets/{market_id}")
 def delete_market(market_id: str, db: Session = Depends(get_db)):
     market = db.query(Market).filter(Market.id == market_id).first()
@@ -262,3 +266,73 @@ def delete_market(market_id: str, db: Session = Depends(get_db)):
     db.delete(market)
     db.commit()
     return {"message": "Market deleted"}
+
+@router.post("/markets/{market_id}/resolve")
+def resolve_market(market_id: str, db: Session = Depends(get_db)):
+    market = db.query(Market).filter(Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+    if market.status != "open":
+        raise HTTPException(status_code=400, detail="Market already resolved")
+
+    print(f"🔍 Resolving: {market.title}")
+
+    # Search for evidence
+    evidence = search_resolution_evidence(market.title, market.resolution_source)
+    if not evidence:
+        return {"message": "No evidence found", "resolution": "UNRESOLVED"}
+
+    # Determine resolution
+    result = determine_resolution(market.title, market.resolution_date, evidence)
+    print(f"  📊 Resolution: {result['resolution']} (confidence: {result['confidence']})")
+
+    if result["resolution"] == "UNRESOLVED":
+        return {
+            "message": "Market unresolved — not enough evidence",
+            "reasoning": result["reasoning"]
+        }
+
+    # Update market status
+    market.status = f"resolved_{result['resolution'].lower()}"
+
+    # Redistribute credits
+    redistribute_credits(market, result["resolution"], db)
+    db.commit()
+
+    return {
+        "message": f"Market resolved {result['resolution']}",
+        "market": market.title,
+        "resolution": result["resolution"],
+        "confidence": result["confidence"],
+        "reasoning": result["reasoning"]
+    }
+
+@router.post("/resolve-all")
+def resolve_all_markets(db: Session = Depends(get_db)):
+    """Check all markets and resolve any that have evidence."""
+    markets = db.query(Market).filter(Market.status == "open").all()
+    results = []
+
+    for market in markets:
+        print(f"\n🔍 Checking: {market.title}")
+        evidence = search_resolution_evidence(market.title, market.resolution_source)
+        if not evidence:
+            continue
+
+        result = determine_resolution(market.title, market.resolution_date, evidence)
+
+        if result["resolution"] != "UNRESOLVED" and result["confidence"] > 0.7:
+            market.status = f"resolved_{result['resolution'].lower()}"
+            redistribute_credits(market, result["resolution"], db)
+            db.commit()
+            results.append({
+                "market": market.title,
+                "resolution": result["resolution"],
+                "confidence": result["confidence"],
+                "reasoning": result["reasoning"]
+            })
+
+    return {
+        "message": f"Resolved {len(results)} markets",
+        "resolved": results
+    }
