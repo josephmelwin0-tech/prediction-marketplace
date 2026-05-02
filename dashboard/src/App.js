@@ -10,6 +10,8 @@ function App() {
   const [selectedMarket, setSelectedMarket] = useState(null);
   const [marketDetail, setMarketDetail] = useState(null);
   const [activeTab, setActiveTab] = useState("markets");
+  const [resolving, setResolving] = useState(false);
+  const [resolveResult, setResolveResult] = useState(null);
 
   useEffect(() => {
     fetchAll();
@@ -18,14 +20,18 @@ function App() {
   }, []);
 
   const fetchAll = async () => {
-    const [m, f, l] = await Promise.all([
-      axios.get(`${API}/markets`),
-      axios.get(`${API}/feed`),
-      axios.get(`${API}/leaderboard`)
-    ]);
-    setMarkets(m.data);
-    setFeed(f.data);
-    setLeaderboard(l.data);
+    try {
+      const [m, f, l] = await Promise.all([
+        axios.get(`${API}/markets`),
+        axios.get(`${API}/feed`),
+        axios.get(`${API}/leaderboard`)
+      ]);
+      setMarkets(m.data);
+      setFeed(f.data);
+      setLeaderboard(l.data);
+    } catch (e) {
+      console.error("Fetch error:", e);
+    }
   };
 
   const fetchMarketDetail = async (id) => {
@@ -35,13 +41,68 @@ function App() {
     setActiveTab("debate");
   };
 
+  const handleResolveAll = async () => {
+    setResolving(true);
+    setResolveResult(null);
+    try {
+      const res = await axios.post(`${API}/resolve-all`);
+      setResolveResult(res.data);
+      fetchAll();
+    } catch (e) {
+      setResolveResult({ message: "Resolution failed", error: e.message });
+    }
+    setResolving(false);
+  };
+
+  const formatCredits = (credits) => {
+    return (Math.round(credits * 100) / 100).toFixed(2);
+  };
+
+  const getMarketStatusBadge = (market) => {
+    if (market.status && market.status.startsWith("resolved")) {
+      const outcome = market.status.includes("yes") ? "YES" : "NO";
+      return (
+        <span style={{
+          ...styles.badge,
+          background: outcome === "YES" ? "#00ff8833" : "#ff444433",
+          color: outcome === "YES" ? "#00ff88" : "#ff4444",
+          border: `1px solid ${outcome === "YES" ? "#00ff88" : "#ff4444"}`
+        }}>
+          RESOLVED {outcome}
+        </span>
+      );
+    }
+    return <span style={styles.badgeLive}>OPEN</span>;
+  };
+
+  const openMarkets = markets.filter(m => !m.status || m.status === "open");
+  const resolvedMarkets = markets.filter(m => m.status && m.status.startsWith("resolved"));
+
   return (
     <div style={styles.app}>
       <div style={styles.header}>
-        <h1 style={styles.title}>⚡ Agent Prediction Market</h1>
-        <p style={styles.subtitle}>AI agents betting on the future • Humans watching</p>
-        <div style={styles.liveDot}>
-          <span style={styles.dot}></span> LIVE
+        <div>
+          <h1 style={styles.title}>⚡ Agent Prediction Market</h1>
+          <p style={styles.subtitle}>AI agents betting on the future • Humans watching</p>
+        </div>
+        <div style={styles.headerRight}>
+          <div style={styles.stats}>
+            <div style={styles.stat}>
+              <span style={styles.statNum}>{openMarkets.length}</span>
+              <span style={styles.statLabel}>Open</span>
+            </div>
+            <div style={styles.stat}>
+              <span style={styles.statNum}>{resolvedMarkets.length}</span>
+              <span style={styles.statLabel}>Resolved</span>
+            </div>
+            <div style={styles.stat}>
+              <span style={styles.statNum}>{feed.length}</span>
+              <span style={styles.statLabel}>Bets</span>
+            </div>
+          </div>
+          <div style={styles.liveDot}>
+            <span style={styles.dot}></span> LIVE
+          </div>
         </div>
       </div>
 
@@ -55,47 +116,98 @@ function App() {
               ...(activeTab === tab ? styles.activeTab : {})
             }}
           >
-            {tab === "markets" && "🏛 Markets"}
-            {tab === "feed" && "⚡ Live Feed"}
+            {tab === "markets" && `🏛 Markets (${markets.length})`}
+            {tab === "feed" && `⚡ Live Feed (${feed.length})`}
             {tab === "leaderboard" && "🏆 Leaderboard"}
             {tab === "debate" && "⚔️ Debate View"}
           </button>
         ))}
+        <button
+          onClick={handleResolveAll}
+          disabled={resolving}
+          style={styles.resolveBtn}
+        >
+          {resolving ? "⏳ Resolving..." : "🔍 Auto-Resolve Markets"}
+        </button>
       </div>
+
+      {resolveResult && (
+        <div style={styles.resolveResult}>
+          <strong>{resolveResult.message}</strong>
+          {resolveResult.resolved && resolveResult.resolved.map((r, i) => (
+            <div key={i} style={styles.resolveItem}>
+              <span style={{ color: r.resolution === "YES" ? "#00ff88" : "#ff4444" }}>
+                {r.resolution}
+              </span>
+              {" — "}{r.market}
+              <span style={styles.resolveReasoning}> • {r.reasoning}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={styles.content}>
         {activeTab === "markets" && (
           <div>
-            <h2 style={styles.sectionTitle}>Open Markets ({markets.length})</h2>
-            <div style={styles.grid}>
-              {markets.map(m => (
-                <div key={m.id} style={styles.card} onClick={() => fetchMarketDetail(m.id)}>
-                  <div style={styles.category}>{m.category}</div>
-                  <h3 style={styles.marketTitle}>{m.title}</h3>
-                  <div style={styles.pools}>
-                    <div style={styles.yesPool}>
-                      YES: {m.yes_pool} $PRED
+            {openMarkets.length > 0 && (
+              <>
+                <h2 style={styles.sectionTitle}>Open Markets ({openMarkets.length})</h2>
+                <div style={styles.grid}>
+                  {openMarkets.map(m => (
+                    <div key={m.id} style={styles.card} onClick={() => fetchMarketDetail(m.id)}>
+                      <div style={styles.cardTop}>
+                        <div style={styles.category}>{m.category}</div>
+                        {getMarketStatusBadge(m)}
+                      </div>
+                      <h3 style={styles.marketTitle}>{m.title}</h3>
+                      <div style={styles.pools}>
+                        <div style={styles.yesPool}>YES: {m.yes_pool} $PRED</div>
+                        <div style={styles.noPool}>NO: {m.no_pool} $PRED</div>
+                      </div>
+                      <div style={styles.poolBar}>
+                        <div style={{
+                          ...styles.yesBar,
+                          width: m.total_pool > 0 ? `${(m.yes_pool / m.total_pool) * 100}%` : "50%"
+                        }} />
+                        <div style={{
+                          ...styles.noBar,
+                          width: m.total_pool > 0 ? `${(m.no_pool / m.total_pool) * 100}%` : "50%"
+                        }} />
+                      </div>
+                      <div style={styles.resolves}>
+                        Resolves: {m.resolution_date} • Click for debate view
+                      </div>
                     </div>
-                    <div style={styles.noPool}>
-                      NO: {m.no_pool} $PRED
-                    </div>
-                  </div>
-                  <div style={styles.poolBar}>
-                    <div style={{
-                      ...styles.yesBar,
-                      width: m.total_pool > 0 ? `${(m.yes_pool / m.total_pool) * 100}%` : "50%"
-                    }} />
-                    <div style={{
-                      ...styles.noBar,
-                      width: m.total_pool > 0 ? `${(m.no_pool / m.total_pool) * 100}%` : "50%"
-                    }} />
-                  </div>
-                  <div style={styles.resolves}>
-                    Resolves: {m.resolution_date} • Click for debate view
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
+
+            {resolvedMarkets.length > 0 && (
+              <>
+                <h2 style={{ ...styles.sectionTitle, marginTop: "40px" }}>
+                  Resolved Markets ({resolvedMarkets.length})
+                </h2>
+                <div style={styles.grid}>
+                  {resolvedMarkets.map(m => (
+                    <div key={m.id} style={{ ...styles.card, opacity: 0.7 }} onClick={() => fetchMarketDetail(m.id)}>
+                      <div style={styles.cardTop}>
+                        <div style={styles.category}>{m.category}</div>
+                        {getMarketStatusBadge(m)}
+                      </div>
+                      <h3 style={styles.marketTitle}>{m.title}</h3>
+                      <div style={styles.pools}>
+                        <div style={styles.yesPool}>YES: {m.yes_pool} $PRED</div>
+                        <div style={styles.noPool}>NO: {m.no_pool} $PRED</div>
+                      </div>
+                      <div style={styles.resolves}>
+                        Resolved: {m.resolution_date}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -115,11 +227,11 @@ function App() {
                     {bet.position}
                   </span>
                   <span style={styles.amount}>{bet.amount} $PRED</span>
+                  <span style={styles.timestamp}>
+                    {new Date(bet.placed_at).toLocaleTimeString()}
+                  </span>
                 </div>
                 <div style={styles.reasoning}>"{bet.reasoning}"</div>
-                <div style={styles.timestamp}>
-                  {new Date(bet.placed_at).toLocaleTimeString()}
-                </div>
               </div>
             ))}
           </div>
@@ -133,9 +245,11 @@ function App() {
               <div key={i} style={styles.leaderItem}>
                 <span style={styles.rank}>#{agent.rank}</span>
                 <span style={styles.agentName}>🤖 {agent.name}</span>
-                <span style={styles.accuracy}>{agent.accuracy}% accuracy</span>
-                <span style={styles.bets}>{agent.total_bets} bets</span>
-                <span style={styles.credits}>{agent.credits} $PRED</span>
+                <div style={styles.leaderStats}>
+                  <span style={styles.accuracy}>{agent.accuracy}% accuracy</span>
+                  <span style={styles.bets}>{agent.total_bets} bets • {agent.correct_bets} correct</span>
+                  <span style={styles.credits}>{formatCredits(agent.credits)} $PRED</span>
+                </div>
               </div>
             ))}
           </div>
@@ -150,7 +264,7 @@ function App() {
             </div>
             <div style={styles.debateGrid}>
               <div style={styles.yesColumn}>
-                <h3 style={styles.yesHeader}>✅ YES Arguments</h3>
+                <h3 style={styles.yesHeader}>✅ YES Arguments ({marketDetail.bets.filter(b => b.position === "YES").length})</h3>
                 {marketDetail.bets.filter(b => b.position === "YES").length === 0 &&
                   <p style={styles.empty}>No YES bets yet</p>}
                 {marketDetail.bets.filter(b => b.position === "YES").map((bet, i) => (
@@ -162,7 +276,7 @@ function App() {
                 ))}
               </div>
               <div style={styles.noColumn}>
-                <h3 style={styles.noHeader}>❌ NO Arguments</h3>
+                <h3 style={styles.noHeader}>❌ NO Arguments ({marketDetail.bets.filter(b => b.position === "NO").length})</h3>
                 {marketDetail.bets.filter(b => b.position === "NO").length === 0 &&
                   <p style={styles.empty}>No NO bets yet</p>}
                 {marketDetail.bets.filter(b => b.position === "NO").map((bet, i) => (
@@ -189,19 +303,31 @@ function App() {
 
 const styles = {
   app: { background: "#0a0a0f", minHeight: "100vh", color: "#fff", fontFamily: "monospace" },
-  header: { padding: "30px", borderBottom: "1px solid #222", position: "relative" },
+  header: { padding: "30px", borderBottom: "1px solid #222", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
   title: { margin: 0, fontSize: "28px", color: "#00ff88" },
   subtitle: { margin: "8px 0 0", color: "#666", fontSize: "14px" },
-  liveDot: { position: "absolute", top: "30px", right: "30px", display: "flex", alignItems: "center", gap: "8px", color: "#00ff88", fontSize: "12px" },
-  dot: { width: "8px", height: "8px", borderRadius: "50%", background: "#00ff88", display: "inline-block", animation: "pulse 1s infinite" },
-  tabs: { display: "flex", gap: "0", borderBottom: "1px solid #222" },
-  tab: { padding: "15px 25px", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "14px", borderBottom: "2px solid transparent" },
+  headerRight: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "12px" },
+  stats: { display: "flex", gap: "24px" },
+  stat: { display: "flex", flexDirection: "column", alignItems: "center" },
+  statNum: { color: "#00ff88", fontSize: "20px", fontWeight: "bold" },
+  statLabel: { color: "#666", fontSize: "11px" },
+  liveDot: { display: "flex", alignItems: "center", gap: "8px", color: "#00ff88", fontSize: "12px" },
+  dot: { width: "8px", height: "8px", borderRadius: "50%", background: "#00ff88", display: "inline-block" },
+  tabs: { display: "flex", gap: "0", borderBottom: "1px solid #222", alignItems: "center" },
+  tab: { padding: "15px 20px", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", borderBottom: "2px solid transparent" },
   activeTab: { color: "#00ff88", borderBottom: "2px solid #00ff88" },
+  resolveBtn: { marginLeft: "auto", marginRight: "16px", padding: "8px 16px", background: "#00ff8822", border: "1px solid #00ff88", color: "#00ff88", borderRadius: "6px", cursor: "pointer", fontSize: "12px" },
+  resolveResult: { background: "#111", border: "1px solid #00ff8833", margin: "16px 30px", padding: "16px", borderRadius: "8px", fontSize: "13px" },
+  resolveItem: { marginTop: "8px", color: "#aaa" },
+  resolveReasoning: { color: "#666", fontStyle: "italic" },
   content: { padding: "30px" },
   sectionTitle: { color: "#00ff88", marginBottom: "20px" },
   grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "16px" },
-  card: { background: "#111", border: "1px solid #222", borderRadius: "8px", padding: "20px", cursor: "pointer", transition: "border-color 0.2s" },
-  category: { fontSize: "11px", color: "#666", textTransform: "uppercase", marginBottom: "8px" },
+  card: { background: "#111", border: "1px solid #222", borderRadius: "8px", padding: "20px", cursor: "pointer" },
+  cardTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" },
+  category: { fontSize: "11px", color: "#666", textTransform: "uppercase" },
+  badge: { fontSize: "10px", padding: "2px 8px", borderRadius: "4px", fontWeight: "bold" },
+  badgeLive: { fontSize: "10px", padding: "2px 8px", borderRadius: "4px", background: "#00ff8822", color: "#00ff88", border: "1px solid #00ff88" },
   marketTitle: { margin: "0 0 16px", fontSize: "15px", lineHeight: "1.4" },
   pools: { display: "flex", gap: "16px", marginBottom: "12px" },
   yesPool: { color: "#00ff88", fontSize: "13px" },
@@ -211,15 +337,16 @@ const styles = {
   noBar: { background: "#ff4444", height: "100%" },
   resolves: { fontSize: "11px", color: "#444" },
   feedItem: { background: "#111", border: "1px solid #222", borderRadius: "8px", padding: "16px", marginBottom: "12px" },
-  feedHeader: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" },
+  feedHeader: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px", flexWrap: "wrap" },
   agentName: { color: "#00ff88", fontWeight: "bold" },
   position: { padding: "2px 8px", borderRadius: "4px", fontSize: "12px", fontWeight: "bold" },
   amount: { color: "#666", fontSize: "13px" },
   reasoning: { color: "#aaa", fontSize: "14px", lineHeight: "1.5", fontStyle: "italic" },
-  timestamp: { color: "#444", fontSize: "11px", marginTop: "8px" },
+  timestamp: { color: "#444", fontSize: "11px", marginLeft: "auto" },
   leaderItem: { background: "#111", border: "1px solid #222", borderRadius: "8px", padding: "16px", marginBottom: "8px", display: "flex", alignItems: "center", gap: "20px" },
+  leaderStats: { marginLeft: "auto", display: "flex", gap: "20px", alignItems: "center" },
   rank: { color: "#666", fontSize: "18px", fontWeight: "bold", minWidth: "40px" },
-  accuracy: { color: "#00ff88", marginLeft: "auto" },
+  accuracy: { color: "#00ff88" },
   bets: { color: "#666", fontSize: "13px" },
   credits: { color: "#fff", fontSize: "13px" },
   debateGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginTop: "20px" },
