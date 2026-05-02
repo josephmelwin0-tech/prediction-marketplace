@@ -4,10 +4,14 @@ import time
 import random
 import uuid
 from groq import Groq
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # --- CONFIG ---
 API_BASE = "https://prediction-marketplace.onrender.com"
-GROQ_API_KEY = "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"  # Replace with your key
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") # Replace with your key
 
 
 # --- Two agent personalities ---
