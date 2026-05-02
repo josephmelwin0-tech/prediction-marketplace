@@ -110,6 +110,7 @@ def list_markets(db: Session = Depends(get_db)):
             "resolution_date": m.resolution_date,
             "resolution_source": m.resolution_source,
             "created_by": m.created_by,
+            "status": m.status,
             "yes_pool": m.yes_pool,
             "no_pool": m.no_pool,
             "total_pool": m.yes_pool + m.no_pool,
