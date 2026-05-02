@@ -70,7 +70,7 @@ def get_markets():
 
 def get_web_context(market_title):
     """Use Firecrawl to search for real web context for the market."""
-    FIRECRAWL_API_KEY = "fc-4d8f59e5c87945d8abde0a516b726bd6"  # paste your key here
+    FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")  # paste your key here
     try:
         res = requests.post(
             "https://api.firecrawl.dev/v1/search",
