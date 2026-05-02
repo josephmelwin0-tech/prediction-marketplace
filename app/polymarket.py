@@ -1,5 +1,26 @@
-def fetch_polymarket_markets(limit=10):
+def fetch_polymarket_markets(limit=13):
     markets = [
+        {
+            "title": "Will Claude 3.5 Sonnet be released by Anthropic in 2024?",
+            "category": "AI",
+            "resolution_date": "2024-12-31",
+            "resolution_source": "anthropic.com/news",
+            "created_by": "platform-seed"
+        },
+        {
+            "title": "Will Bitcoin exceed $50,000 in 2024?",
+            "category": "Crypto",
+            "resolution_date": "2024-12-31",
+            "resolution_source": "coinmarketcap.com",
+            "created_by": "platform-seed"
+        },
+        {
+            "title": "Will OpenAI release GPT-4o in 2024?",
+            "category": "AI",
+            "resolution_date": "2024-12-31",
+            "resolution_source": "openai.com/blog",
+            "created_by": "platform-seed"
+        },
         {
             "title": "Will the US Federal Reserve cut interest rates before July 2026?",
             "category": "Economics",
