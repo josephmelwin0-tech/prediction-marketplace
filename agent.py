@@ -2,19 +2,18 @@ import requests
 import json
 import time
 import random
-import uuid
+import re
 from groq import Groq
 import os
 from dotenv import load_dotenv
 load_dotenv()
 
-
 # --- CONFIG ---
 API_BASE = "https://prediction-marketplace.onrender.com"
-GROQ_API_KEY = os.getenv("GROQ_API_KEY") # Replace with your key
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
-
-# --- Two agent personalities ---
+# --- Five agent personalities ---
 AGENTS = [
     {
         "name": "BullishBot-9000",
@@ -26,6 +25,24 @@ AGENTS = [
         "name": "SkepticalSam",
         "wallet": "wallet_skeptical_sam",
         "personality": "You are a cautious, contrarian AI agent. You tend to bet NO on markets, preferring to bet against hype and mainstream narratives. You cite historical failures, market inefficiencies, and regulatory risks in your reasoning.",
+        "bias": "NO"
+    },
+    {
+        "name": "MacroMind-Alpha",
+        "wallet": "wallet_macromind_alpha",
+        "personality": "You are a macroeconomic analyst AI agent. You focus on interest rates, inflation, GDP data, and global market conditions. You make precise, data-heavy arguments citing economic indicators.",
+        "bias": "NO"
+    },
+    {
+        "name": "CryptoOracle-X",
+        "wallet": "wallet_cryptooracle_x",
+        "personality": "You are a crypto-native AI agent. You are bullish on blockchain adoption, DeFi, Solana, and decentralization trends. You cite on-chain data, developer activity, and network growth in your reasoning.",
+        "bias": "YES"
+    },
+    {
+        "name": "RegWatch-7",
+        "wallet": "wallet_regwatch_7",
+        "personality": "You are a regulatory risk analyst AI agent. You focus on government policy, legal risks, compliance issues, and geopolitical factors that could derail predictions. You are naturally pessimistic about timelines.",
         "bias": "NO"
     }
 ]
@@ -45,7 +62,6 @@ def register_agent(agent):
             print(f"✅ Registered {agent['name']} — ID: {data['agent_id']}")
             return data["agent_id"]
         elif res.status_code == 400:
-            # Already registered, fetch existing ID
             agents = requests.get(f"{API_BASE}/agents").json()
             for a in agents:
                 if a["name"] == agent["name"]:
@@ -70,7 +86,6 @@ def get_markets():
 
 def get_web_context(market_title):
     """Use Firecrawl to search for real web context for the market."""
-    FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")  # paste your key here
     try:
         res = requests.post(
             "https://api.firecrawl.dev/v1/search",
@@ -89,7 +104,7 @@ def get_web_context(market_title):
             f"- {r.get('title', '')}: {r.get('description', '')}"
             for r in results if r.get('title')
         ])
-        return f"\n\nReal-world context from web search:\n{context}" if context else ""
+        return f"\n\nReal-world context from web search:\n{context}".replace("'", "").replace('"', '') if context else ""
     except Exception as e:
         print(f"⚠️  Firecrawl search failed: {e}")
         return ""
@@ -119,7 +134,7 @@ Respond in this exact JSON format:
   "reasoning": "2-3 sentences explaining your reasoning with specific arguments"
 }}
 
-Only respond with the JSON, nothing else."""
+Only respond with the JSON, nothing else. No extra text, no markdown, no backticks."""
 
     try:
         response = client.chat.completions.create(
@@ -129,17 +144,28 @@ Only respond with the JSON, nothing else."""
             max_tokens=300
         )
         raw = response.choices[0].message.content.strip()
-        # Clean up in case model adds backticks
         raw = raw.replace("```json", "").replace("```", "").strip()
+
+        # Extract JSON object robustly
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            raw = match.group()
+
         decision = json.loads(raw)
+
+        # Validate required fields
+        assert decision["position"] in ["YES", "NO"]
+        assert 5 <= float(decision["amount"]) <= 20
+        assert len(decision["reasoning"]) >= 20
+
         return decision
+
     except Exception as e:
         print(f"❌ Groq error: {e}")
-        # Fallback decision
         return {
             "position": agent["bias"],
             "amount": 10.0,
-            "reasoning": f"Based on market trends and my analysis of {market['title']}, I am placing this bet with moderate confidence."
+            "reasoning": f"Based on current market conditions and available data for '{market['title']}', I am placing this bet with moderate confidence aligned with my analytical framework."
         }
 
 
@@ -166,10 +192,27 @@ def place_bet(agent_id, market, decision):
         return False
 
 
+def check_and_seed_markets():
+    """Seed markets if none exist."""
+    try:
+        res = requests.get(f"{API_BASE}/markets")
+        markets = res.json()
+        if len(markets) == 0:
+            print("⚠️  No markets found — seeding now...")
+            requests.post(f"{API_BASE}/seed-markets")
+            time.sleep(2)
+            print("✅ Markets seeded")
+    except Exception as e:
+        print(f"❌ Market check error: {e}")
+
+
 def run_agent_loop(rounds=3, delay=15):
     """Main loop — agents register then bet on markets."""
     print("🚀 Starting Agent Prediction Market Bot")
     print("=" * 50)
+
+    # Auto seed markets if empty
+    check_and_seed_markets()
 
     # Register all agents
     agent_ids = {}
@@ -204,12 +247,12 @@ def run_agent_loop(rounds=3, delay=15):
             market = random.choice(markets)
             print(f"\n🤖 {agent['name']} analyzing: {market['title']}")
 
-            # Get web context (if Exa configured)
+            # Get web context from Firecrawl
             web_context = get_web_context(market["title"])
             if web_context:
-                print(f"  🌐 Got web context from Exa")
+                print(f"  🌐 Got web context from Firecrawl")
 
-            # Generate reasoning
+            # Generate reasoning via Groq
             decision = generate_reasoning(agent, market, web_context)
             print(f"  🧠 Decision: {decision['position']} {decision['amount']} $PRED")
 
@@ -222,8 +265,8 @@ def run_agent_loop(rounds=3, delay=15):
         print(f"\n⏳ Waiting {delay} seconds before next round...")
         time.sleep(delay)
 
-    print("\n✅ All rounds complete. Check your dashboard!")
-    print(f"🌐 {API_BASE.replace('prediction-marketplace.onrender.com', 'rococo-moxie-49ce59.netlify.app')}")
+    print("\n✅ All rounds complete!")
+    print(f"🌐 Dashboard: https://rococo-moxie-49ce59.netlify.app")
 
 
 if __name__ == "__main__":
