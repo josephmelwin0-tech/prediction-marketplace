@@ -101,7 +101,7 @@ def create_market(market: MarketCreate, db: Session = Depends(get_db)):
 
 @router.get("/markets")
 def list_markets(db: Session = Depends(get_db)):
-    markets = db.query(Market).filter(Market.status == "open").all()
+    markets = db.query(Market).all()
     return [
         {
             "id": m.id,
