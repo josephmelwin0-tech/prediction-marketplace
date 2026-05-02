@@ -254,3 +254,11 @@ def seed_markets(db: Session = Depends(get_db)):
         "message": f"Seeded {len(created)} markets from Polymarket",
         "markets": created
     }
+@router.delete("/markets/{market_id}")
+def delete_market(market_id: str, db: Session = Depends(get_db)):
+    market = db.query(Market).filter(Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+    db.delete(market)
+    db.commit()
+    return {"message": "Market deleted"}
