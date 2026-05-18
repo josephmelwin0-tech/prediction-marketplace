@@ -1,17 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from .auth import generate_api_key, hash_api_key, get_current_agent
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 from pydantic import BaseModel
 from typing import Optional
 from .database import get_db
 from .models import Agent, Market, Bet
 from .polymarket import fetch_polymarket_markets
-import uuid
+from .email import send_welcome, send_low_credit_alert, send_market_resolved
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+import uuid, os
 from .resolution import search_resolution_evidence, determine_resolution, redistribute_credits
 from datetime import datetime
 
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET_KEY", "change-me-in-env")
 
 # --- Schemas ---
 
@@ -28,10 +35,8 @@ class MarketCreate(BaseModel):
     category: str
     resolution_date: str
     resolution_source: str
-    created_by: str
 
 class BetPlace(BaseModel):
-    agent_id: str
     position: str  # "YES" or "NO"
     amount: float
     reasoning: str
@@ -39,7 +44,8 @@ class BetPlace(BaseModel):
 # --- Auth Routes ---
 
 @router.post("/signup")
-def signup(payload: DeveloperSignup, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def signup(request: Request, payload: DeveloperSignup, db: Session = Depends(get_db)):
     """
     Create a developer account and get your API key.
     The key is shown ONCE — save it immediately.
@@ -61,6 +67,16 @@ def signup(payload: DeveloperSignup, db: Session = Depends(get_db)):
     db.add(account)
     db.commit()
     db.refresh(account)
+
+    try:
+        send_welcome(
+            to_email=payload.email,
+            name=payload.name,
+            api_key=raw_key,
+            account_id=account.id
+        )
+    except Exception:
+        pass
 
     return {
         "message": "Account created. Save your API key — it will NOT be shown again.",
@@ -98,17 +114,15 @@ def register_agent(agent: AgentRegister, db: Session = Depends(get_db)):
         name=agent.name,
         wallet_address=agent.wallet_address,
         credits=100.0,
-        sol_paid=0.05
     )
     db.add(new_agent)
     db.commit()
     db.refresh(new_agent)
 
     return {
-        "message": "Agent registered successfully (legacy). Use /signup for the new auth system.",
+        "message": "Agent registered (legacy). Use /signup for the new auth system.",
         "agent_id": new_agent.id,
         "credits_granted": 100.0,
-        "sol_fee_paid": 0.05,
         "wallet": agent.wallet_address
     }
 
@@ -142,13 +156,30 @@ def get_agent(agent_id: str, db: Session = Depends(get_db)):
 # --- Market Routes ---
 
 @router.post("/markets")
-def create_market(market: MarketCreate, db: Session = Depends(get_db)):
+def create_market(
+    market: MarketCreate,
+    db: Session = Depends(get_db),
+    current: Agent = Depends(get_current_agent)
+):
+    """Create a market. Costs 100 credits. Requires X-API-Key header."""
+    MARKET_COST = 100
+
+    result = db.execute(
+        update(Agent)
+        .where(Agent.id == current.id, Agent.credits >= MARKET_COST)
+        .values(credits=Agent.credits - MARKET_COST)
+        .returning(Agent.credits)
+    )
+    new_balance = result.scalar()
+    if new_balance is None:
+        raise HTTPException(status_code=400, detail="Insufficient credits. Market creation costs 100 credits.")
+
     new_market = Market(
         title=market.title,
         category=market.category,
         resolution_date=market.resolution_date,
         resolution_source=market.resolution_source,
-        created_by=market.created_by
+        created_by=current.id
     )
     db.add(new_market)
     db.commit()
@@ -157,8 +188,9 @@ def create_market(market: MarketCreate, db: Session = Depends(get_db)):
     return {
         "message": "Market created successfully",
         "market_id": new_market.id,
-        "sol_fee_paid": 0.001,
-        "title": new_market.title
+        "title": new_market.title,
+        "credits_spent": MARKET_COST,
+        "remaining_credits": new_balance
     }
 
 
@@ -222,35 +254,42 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/markets/{market_id}/bet")
+@limiter.limit("30/minute")
 def place_bet(
+    request: Request,
     market_id: str,
     bet: BetPlace,
     db: Session = Depends(get_db),
-    current: Agent = Depends(get_current_agent)   # <-- NOW REQUIRES API KEY
+    current: Agent = Depends(get_current_agent)
 ):
     """Place a bet. Requires X-API-Key header."""
+    if bet.position not in ["YES", "NO"]:
+        raise HTTPException(status_code=400, detail="Position must be YES or NO")
+    if not bet.reasoning or len(bet.reasoning) < 20:
+        raise HTTPException(status_code=400, detail="Reasoning must be at least 20 characters")
+
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
     if market.status != "open":
         raise HTTPException(status_code=400, detail="Market is closed")
 
-    # Use the authenticated account's credits, not a random agent_id lookup
-    agent = current
+    platform_fee = round(bet.amount * 0.02, 4)
+    total_cost = bet.amount + platform_fee
 
-    if agent.credits < bet.amount:
-        raise HTTPException(status_code=400, detail=f"Insufficient credits. You have {agent.credits}, need {bet.amount}.")
-    if bet.position not in ["YES", "NO"]:
-        raise HTTPException(status_code=400, detail="Position must be YES or NO")
-    if not bet.reasoning or len(bet.reasoning) < 20:
-        raise HTTPException(status_code=400, detail="Reasoning must be at least 20 characters")
+    result = db.execute(
+        update(Agent)
+        .where(Agent.id == current.id, Agent.credits >= total_cost)
+        .values(credits=Agent.credits - total_cost, total_bets=Agent.total_bets + 1)
+        .returning(Agent.credits)
+    )
+    new_balance = result.scalar()
+    if new_balance is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient credits. Need {total_cost}, you have {current.credits}."
+        )
 
-    # Deduct credits + platform fee
-    platform_fee = bet.amount * 0.02
-    agent.credits -= (bet.amount + platform_fee)
-    agent.total_bets += 1
-
-    # Update pools
     if bet.position == "YES":
         market.yes_pool += bet.amount
     else:
@@ -258,17 +297,26 @@ def place_bet(
 
     new_bet = Bet(
         market_id=market_id,
-        agent_id=agent.id,
-        agent_name=agent.name,
+        agent_id=current.id,
+        agent_name=current.name,
         position=bet.position,
         amount=bet.amount,
         reasoning=bet.reasoning,
-        sol_fee_paid=0.0005
     )
 
     db.add(new_bet)
     db.commit()
     db.refresh(new_bet)
+
+    try:
+        if new_balance <= 100 and current.developer_email:
+            send_low_credit_alert(
+                to_email=current.developer_email,
+                name=current.name,
+                credits_remaining=new_balance
+            )
+    except Exception:
+        pass
 
     return {
         "message": "Bet placed successfully",
@@ -276,8 +324,7 @@ def place_bet(
         "position": bet.position,
         "amount": bet.amount,
         "platform_fee": platform_fee,
-        "sol_fee_paid": 0.0005,
-        "remaining_credits": agent.credits,
+        "remaining_credits": new_balance,
         "reasoning_logged": True
     }
 
@@ -303,7 +350,11 @@ def live_feed(db: Session = Depends(get_db)):
 @router.get("/leaderboard")
 def leaderboard(db: Session = Depends(get_db)):
     agents = db.query(Agent).filter(Agent.total_bets > 0).all()
-    ranked = sorted(agents, key=lambda a: a.correct_bets / a.total_bets if a.total_bets > 0 else 0, reverse=True)
+    ranked = sorted(
+        agents,
+        key=lambda a: a.correct_bets / a.total_bets if a.total_bets > 0 else 0,
+        reverse=True
+    )
     return [
         {
             "rank": i + 1,
@@ -317,10 +368,16 @@ def leaderboard(db: Session = Depends(get_db)):
     ]
 
 
-# --- Admin / Utility ---
+# --- Admin / Utility (protected) ---
 
-@router.post("/seed-markets")
+def verify_admin(x_admin_key: str = Header(...)):
+    if x_admin_key != ADMIN_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@router.post("/seed-markets", dependencies=[Depends(verify_admin)])
 def seed_markets(db: Session = Depends(get_db)):
+    """Admin only. Requires X-Admin-Key header."""
     markets = fetch_polymarket_markets(limit=10)
     created = []
 
@@ -344,8 +401,9 @@ def seed_markets(db: Session = Depends(get_db)):
     }
 
 
-@router.delete("/markets/{market_id}")
+@router.delete("/markets/{market_id}", dependencies=[Depends(verify_admin)])
 def delete_market(market_id: str, db: Session = Depends(get_db)):
+    """Admin only. Requires X-Admin-Key header."""
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
@@ -354,22 +412,20 @@ def delete_market(market_id: str, db: Session = Depends(get_db)):
     return {"message": "Market deleted"}
 
 
-@router.post("/markets/{market_id}/resolve")
+@router.post("/markets/{market_id}/resolve", dependencies=[Depends(verify_admin)])
 def resolve_market(market_id: str, db: Session = Depends(get_db)):
+    """Admin only. Requires X-Admin-Key header."""
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
     if market.status != "open":
         raise HTTPException(status_code=400, detail="Market already resolved")
 
-    print(f"🔍 Resolving: {market.title}")
-
     evidence = search_resolution_evidence(market.title, market.resolution_source)
     if not evidence:
         return {"message": "No evidence found", "resolution": "UNRESOLVED"}
 
     result = determine_resolution(market.title, market.resolution_date, evidence)
-    print(f"  📊 Resolution: {result['resolution']} (confidence: {result['confidence']})")
 
     if result["resolution"] == "UNRESOLVED":
         return {
@@ -381,6 +437,24 @@ def resolve_market(market_id: str, db: Session = Depends(get_db)):
     redistribute_credits(market, result["resolution"], db)
     db.commit()
 
+    try:
+        bets = db.query(Bet).filter(Bet.market_id == market_id).all()
+        winning_agent_ids = [b.agent_id for b in bets if b.position == result["resolution"]]
+        for agent_id in set(winning_agent_ids):
+            agent = db.query(Agent).filter(Agent.id == agent_id).first()
+            if agent and agent.developer_email:
+                won_bets = [b for b in bets if b.agent_id == agent_id and b.position == result["resolution"]]
+                credits_won = sum(b.amount for b in won_bets)
+                send_market_resolved(
+                    to_email=agent.developer_email,
+                    name=agent.name,
+                    market_title=market.title,
+                    resolution=result["resolution"],
+                    credits_won=credits_won
+                )
+    except Exception:
+        pass
+
     return {
         "message": f"Market resolved {result['resolution']}",
         "market": market.title,
@@ -390,13 +464,13 @@ def resolve_market(market_id: str, db: Session = Depends(get_db)):
     }
 
 
-@router.post("/resolve-all")
+@router.post("/resolve-all", dependencies=[Depends(verify_admin)])
 def resolve_all_markets(db: Session = Depends(get_db)):
+    """Admin only. Requires X-Admin-Key header."""
     markets = db.query(Market).filter(Market.status == "open").all()
     results = []
 
     for market in markets:
-        print(f"\n🔍 Checking: {market.title}")
         evidence = search_resolution_evidence(market.title, market.resolution_source)
         if not evidence:
             continue
