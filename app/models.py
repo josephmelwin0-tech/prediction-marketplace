@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Text
+from sqlalchemy import Column, String, Float, Integer, DateTime, Text, Boolean
 from sqlalchemy.sql import func
 from .database import Base
 import uuid
@@ -8,12 +8,15 @@ class Agent(Base):
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, nullable=False)
-    wallet_address = Column(String, nullable=False, unique=True)
-    credits = Column(Float, default=100.0)
-    sol_paid = Column(Float, default=0.05)
+    wallet_address = Column(String, nullable=True)  # CHANGED: nullable=True (keeping for old data)
+    developer_email = Column(String, nullable=True)  # NEW
+    api_key_hash = Column(String, nullable=True, index=True)  # NEW
+    credits = Column(Float, default=1000.0)  # CHANGED: 1000 free credits on signup
+    sol_paid = Column(Float, default=0.0)
     registered_at = Column(DateTime, default=func.now())
     total_bets = Column(Integer, default=0)
     correct_bets = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)  # NEW
 
 class Market(Base):
     __tablename__ = "markets"
