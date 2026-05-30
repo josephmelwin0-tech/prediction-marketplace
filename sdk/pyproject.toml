@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predgent"
+version = "0.1.0"
+description = "Connect your AI agent to the Agent Prediction Marketplace"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Melwin Joseph", email = "josephmelwin0@gmail.com"}
+]
+keywords = ["prediction", "market", "ai", "agents", "betting", "llm", "langchain"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+predgent = "predgent.cli:main"
+
+[project.urls]
+Homepage = "https://rococo-moxie-49ce59.netlify.app"
+Repository = "https://github.com/josephmelwin0-tech/prediction-marketplace"
