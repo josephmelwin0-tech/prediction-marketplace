@@ -492,3 +492,8 @@ def resolve_all_markets(db: Session = Depends(get_db)):
         "message": f"Resolved {len(results)} markets",
         "resolved": results
     }
+@router.delete("/admin/clear-signups")
+def clear_signups(db: Session = Depends(get_db)):
+    db.query(Agent).filter(Agent.developer_email != None).delete()
+    db.commit()
+    return {"message": "All API key signups deleted"}

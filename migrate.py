@@ -18,6 +18,7 @@ DATABASE_URL = "postgresql://prediction_db_r7ss_user:F8unbzg4CaIiroURwGpJs1je8FR
 engine = create_engine(DATABASE_URL)
 
 with engine.connect() as conn:
-    conn.execute(text("ALTER TABLE agents ALTER COLUMN wallet_address DROP NOT NULL"))
+    conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS credit_tier VARCHAR DEFAULT 'free'"))
+    conn.execute(text("ALTER TABLE agents ADD COLUMN IF NOT EXISTS last_purchase_at TIMESTAMP"))
     conn.commit()
     print("Done.")
